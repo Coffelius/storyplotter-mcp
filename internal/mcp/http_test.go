@@ -8,12 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/Coffelius/storyplotter-mcp/internal/data"
 )
 
 func TestHTTPInitializeWithBearer(t *testing.T) {
-	s := NewServer(&data.Export{})
+	s := NewServer(&memStore{})
 	ts := httptest.NewServer(s.Handler(HTTPConfig{Bearer: "secret"}))
 	defer ts.Close()
 
@@ -67,7 +65,7 @@ func TestHTTPInitializeWithBearer(t *testing.T) {
 }
 
 func TestHTTPRejectsWithoutBearer(t *testing.T) {
-	s := NewServer(&data.Export{})
+	s := NewServer(&memStore{})
 	ts := httptest.NewServer(s.Handler(HTTPConfig{Bearer: "secret"}))
 	defer ts.Close()
 
@@ -83,7 +81,7 @@ func TestHTTPRejectsWithoutBearer(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	s := NewServer(&data.Export{})
+	s := NewServer(&memStore{})
 	ts := httptest.NewServer(s.Handler(HTTPConfig{Bearer: "secret"}))
 	defer ts.Close()
 
@@ -98,5 +96,24 @@ func TestHealthz(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(b), `"ok"`) {
 		t.Errorf("body = %s", b)
+	}
+}
+
+func TestHTTPRejectsInvalidUserIDHeader(t *testing.T) {
+	s := NewServer(&memStore{})
+	ts := httptest.NewServer(s.Handler(HTTPConfig{Bearer: "secret"}))
+	defer ts.Close()
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/mcp", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set(UserIDHeader, "bad user!")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
 }
