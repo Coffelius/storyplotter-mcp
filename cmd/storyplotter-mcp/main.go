@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -14,32 +13,6 @@ import (
 
 const Version = "0.1.0"
 
-// sharedOnlyStore is a transitional UserStore used in GAB-92 while the
-// disk-backed DiskUserStore (GAB-93) is still on a later commit. Every
-// request — regardless of UserID — resolves to the shared legacy corpus.
-type sharedOnlyStore struct {
-	shared *data.Export
-}
-
-func (s *sharedOnlyStore) Load(userID string) (*data.Export, error) {
-	if s.shared == nil {
-		return &data.Export{}, nil
-	}
-	return s.shared, nil
-}
-
-func (s *sharedOnlyStore) Save(string, *data.Export) error {
-	return errors.New("sharedOnlyStore is read-only")
-}
-
-func (s *sharedOnlyStore) Raw(string) ([]byte, error) {
-	return nil, errors.New("sharedOnlyStore has no raw support")
-}
-
-func (s *sharedOnlyStore) Replace(string, []byte) error {
-	return errors.New("sharedOnlyStore is read-only")
-}
-
 func main() {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(0)
@@ -51,21 +24,14 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "storyplotter-mcp v%s (mode=%s)\n", Version, *mode)
 
-	path := os.Getenv("STORYPLOTTER_DATA_PATH")
-	var exp *data.Export
-	if path != "" {
-		e, err := data.Load(path)
-		if err != nil {
-			log.Fatalf("load data: %v", err)
-		}
-		exp = e
-		log.Printf("loaded %d plots from %s", len(exp.PlotList), path)
-	} else {
-		log.Printf("STORYPLOTTER_DATA_PATH not set; running with empty data")
-		exp = &data.Export{}
+	sharedPath := os.Getenv("STORYPLOTTER_DATA_PATH")
+	dataDir := os.Getenv("STORYPLOTTER_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "/data/users"
 	}
+	log.Printf("user store: baseDir=%s shared=%s", dataDir, sharedPath)
 
-	store := &sharedOnlyStore{shared: exp}
+	store := data.NewDiskUserStore(dataDir, sharedPath)
 	srv := mcp.NewServer(store)
 	for _, t := range tools.All() {
 		srv.Register(t)
