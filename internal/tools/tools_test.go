@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,12 +89,134 @@ func runTool(t *testing.T, tool Tool, args map[string]any) string {
 // keep loadFixture referenced for inline fixture tests.
 var _ = loadFixture
 
+// runToolAsUser runs a tool with a specific UserID against a DiskUserStore
+// whose per-user dir is a tmpdir (persistent across calls within a test if
+// the same store is reused). Callers that need store reuse should build the
+// store once and call the tool handler directly.
+func runToolAsUser(t *testing.T, store mcp.UserStore, tool Tool, args map[string]any, userID string) (string, bool) {
+	t.Helper()
+	var raw json.RawMessage
+	if args != nil {
+		b, _ := json.Marshal(args)
+		raw = b
+	}
+	cc := &mcp.CallContext{
+		Ctx:    context.Background(),
+		UserID: userID,
+		Store:  store,
+	}
+	res, err := tool.Handler(raw, cc)
+	if err != nil {
+		t.Fatalf("%s: err %v", tool.Def.Name, err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatalf("%s: empty content", tool.Def.Name)
+	}
+	return res.Content[0].Text, res.IsError
+}
+
+func TestImportData_HappyPath(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	p, err := filepath.Abs("../../testdata/sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+		"content": string(content),
+	}, "alice")
+	if isErr {
+		t.Fatalf("import returned error: %s", out)
+	}
+	if !strings.Contains(out, "Imported:") || !strings.Contains(out, "plots") {
+		t.Errorf("unexpected import output: %s", out)
+	}
+	// list_plots for alice should now see the sample plots.
+	out, isErr = runToolAsUser(t, store, ListPlots(), nil, "alice")
+	if isErr {
+		t.Fatalf("list_plots errored: %s", out)
+	}
+	if !strings.Contains(out, "The Crimson Hour") {
+		t.Errorf("alice list_plots missing imported plot: %s", out)
+	}
+	// bob never imported — should be empty.
+	out, _ = runToolAsUser(t, store, ListPlots(), nil, "bob")
+	if !strings.Contains(out, "No plots") {
+		t.Errorf("bob should see no plots, got: %s", out)
+	}
+}
+
+func TestImportData_RequiresUserID(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	out, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+		"content": `{"memoList":"[]","tagColorMap":"{}","plotList":"[]","allFolderList":"[]"}`,
+	}, "")
+	if !isErr {
+		t.Fatalf("expected error result for empty user id, got: %s", out)
+	}
+	if !strings.Contains(out, "requires a user identity") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
+func TestImportData_InvalidJSON(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	out, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+		"content": "not valid json at all",
+	}, "carol")
+	if !isErr {
+		t.Fatalf("expected error result, got: %s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "import failed") && !strings.Contains(strings.ToLower(out), "invalid") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+	// Verify nothing was written: Raw should be empty / not exist.
+	raw, err := store.Raw("carol")
+	if err == nil && len(raw) > 0 {
+		t.Errorf("expected no bytes written on invalid import, got %d bytes", len(raw))
+	}
+}
+
+func TestImportData_NoOverwrite(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	p, err := filepath.Abs("../../testdata/sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// First import succeeds.
+	_, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+		"content": string(content),
+	}, "dave")
+	if isErr {
+		t.Fatal("first import should succeed")
+	}
+	// Second import with overwrite:false should fail.
+	out, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+		"content":   string(content),
+		"overwrite": false,
+	}, "dave")
+	if !isErr {
+		t.Fatalf("expected error when overwrite=false over existing data, got: %s", out)
+	}
+	if !strings.Contains(out, "overwrite: true") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
 func TestAllToolsReturnDefinitions(t *testing.T) {
 	got := All()
-	// 8 tools required by the issue; we expose 9 (list_eras and list_events
-	// count as two entries per the issue description).
-	if len(got) != 9 {
-		t.Errorf("want 9 tools, got %d", len(got))
+	// 8 tools required by the original issue, we expose 9 (list_eras and
+	// list_events count as two entries per that description), plus
+	// import_data (GAB-94) brings it to 10.
+	if len(got) != 10 {
+		t.Errorf("want 10 tools, got %d", len(got))
 	}
 	for _, tool := range got {
 		if tool.Def.Name == "" {
