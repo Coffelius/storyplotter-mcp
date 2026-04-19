@@ -1,0 +1,12 @@
+services:
+  storyplotter-mcp:
+    build: .
+    image: storyplotter-mcp:dev
+    environment:
+      STORYPLOTTER_DATA_PATH: /data/storyplotter.json
+      MCP_BEARER: devtoken
+    volumes:
+      - ./testdata/sample.json:/data/storyplotter.json:ro
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
