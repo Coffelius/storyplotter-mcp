@@ -7,6 +7,7 @@ import (
 
 	"github.com/gabistuff/storyplotter-mcp/internal/data"
 	"github.com/gabistuff/storyplotter-mcp/internal/mcp"
+	"github.com/gabistuff/storyplotter-mcp/internal/tools"
 )
 
 const Version = "0.1.0"
@@ -33,6 +34,9 @@ func main() {
 	}
 
 	srv := mcp.NewServer(exp)
+	for _, t := range tools.All() {
+		srv.Register(t)
+	}
 	if err := srv.ServeStdio(os.Stdin, os.Stdout); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
