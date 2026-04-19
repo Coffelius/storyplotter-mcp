@@ -16,10 +16,10 @@ Target host: the existing Contabo VPS running Coolify (see the
 
 ## 1. Push the repo to GitHub
 
-Coolify deploys from Git. This MCP repo has no remote yet; once you create `github.com/gabistuff/storyplotter-mcp` (public or private, either works), push:
+Coolify deploys from Git. This MCP repo has no remote yet; once you create `github.com/Coffelius/storyplotter-mcp` (public or private, either works), push:
 
 ```bash
-git remote add origin git@github.com:gabistuff/storyplotter-mcp.git
+git remote add origin git@github.com:Coffelius/storyplotter-mcp.git
 git push -u origin main
 git push -u origin develop
 ```
@@ -31,7 +31,7 @@ git push -u origin develop
 In Coolify → Projects → your project → New Resource → **Application**:
 
 - **Source:** GitHub (use the existing `Gabistuff` Git source configured in GAB-64).
-- **Repo:** `gabistuff/storyplotter-mcp`.
+- **Repo:** `Coffelius/storyplotter-mcp`.
 - **Branch:** `main` (set up promotion from `develop` via a PR flow once
   the repo is public; for an early deploy, `develop` is fine).
 - **Build pack:** Dockerfile (the repo's `Dockerfile` is multi-stage

@@ -6,9 +6,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/gabistuff/storyplotter-mcp/internal/data"
-	"github.com/gabistuff/storyplotter-mcp/internal/mcp"
-	"github.com/gabistuff/storyplotter-mcp/internal/tools"
+	"github.com/Coffelius/storyplotter-mcp/internal/data"
+	"github.com/Coffelius/storyplotter-mcp/internal/mcp"
+	"github.com/Coffelius/storyplotter-mcp/internal/tools"
 )
 
 const Version = "0.1.0"
