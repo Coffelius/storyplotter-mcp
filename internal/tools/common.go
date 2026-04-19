@@ -26,6 +26,7 @@ func All() []mcp.Tool {
 		Search(),
 		GenerateContext(),
 		ImportData(),
+		RequestExportLink(),
 	}
 }
 

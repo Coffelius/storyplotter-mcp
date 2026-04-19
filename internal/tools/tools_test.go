@@ -89,11 +89,9 @@ func runTool(t *testing.T, tool Tool, args map[string]any) string {
 // keep loadFixture referenced for inline fixture tests.
 var _ = loadFixture
 
-// runToolAsUser runs a tool with a specific UserID against a DiskUserStore
-// whose per-user dir is a tmpdir (persistent across calls within a test if
-// the same store is reused). Callers that need store reuse should build the
-// store once and call the tool handler directly.
-func runToolAsUser(t *testing.T, store mcp.UserStore, tool Tool, args map[string]any, userID string) (string, bool) {
+// runToolAsUser runs a tool with a specific UserID and optional signer /
+// publicURL against the provided store.
+func runToolAsUser(t *testing.T, store mcp.UserStore, signer *mcp.TokenSigner, publicURL string, tool Tool, args map[string]any, userID string) (string, bool) {
 	t.Helper()
 	var raw json.RawMessage
 	if args != nil {
@@ -101,9 +99,11 @@ func runToolAsUser(t *testing.T, store mcp.UserStore, tool Tool, args map[string
 		raw = b
 	}
 	cc := &mcp.CallContext{
-		Ctx:    context.Background(),
-		UserID: userID,
-		Store:  store,
+		Ctx:       context.Background(),
+		UserID:    userID,
+		Store:     store,
+		Signer:    signer,
+		PublicURL: publicURL,
 	}
 	res, err := tool.Handler(raw, cc)
 	if err != nil {
@@ -125,7 +125,7 @@ func TestImportData_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+	out, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
 		"content": string(content),
 	}, "alice")
 	if isErr {
@@ -135,7 +135,7 @@ func TestImportData_HappyPath(t *testing.T) {
 		t.Errorf("unexpected import output: %s", out)
 	}
 	// list_plots for alice should now see the sample plots.
-	out, isErr = runToolAsUser(t, store, ListPlots(), nil, "alice")
+	out, isErr = runToolAsUser(t, store, nil, "", ListPlots(), nil, "alice")
 	if isErr {
 		t.Fatalf("list_plots errored: %s", out)
 	}
@@ -143,7 +143,7 @@ func TestImportData_HappyPath(t *testing.T) {
 		t.Errorf("alice list_plots missing imported plot: %s", out)
 	}
 	// bob never imported — should be empty.
-	out, _ = runToolAsUser(t, store, ListPlots(), nil, "bob")
+	out, _ = runToolAsUser(t, store, nil, "", ListPlots(), nil, "bob")
 	if !strings.Contains(out, "No plots") {
 		t.Errorf("bob should see no plots, got: %s", out)
 	}
@@ -151,7 +151,7 @@ func TestImportData_HappyPath(t *testing.T) {
 
 func TestImportData_RequiresUserID(t *testing.T) {
 	store := data.NewDiskUserStore(t.TempDir(), "")
-	out, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+	out, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
 		"content": `{"memoList":"[]","tagColorMap":"{}","plotList":"[]","allFolderList":"[]"}`,
 	}, "")
 	if !isErr {
@@ -164,7 +164,7 @@ func TestImportData_RequiresUserID(t *testing.T) {
 
 func TestImportData_InvalidJSON(t *testing.T) {
 	store := data.NewDiskUserStore(t.TempDir(), "")
-	out, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+	out, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
 		"content": "not valid json at all",
 	}, "carol")
 	if !isErr {
@@ -191,14 +191,14 @@ func TestImportData_NoOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	// First import succeeds.
-	_, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+	_, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
 		"content": string(content),
 	}, "dave")
 	if isErr {
 		t.Fatal("first import should succeed")
 	}
 	// Second import with overwrite:false should fail.
-	out, isErr := runToolAsUser(t, store, ImportData(), map[string]any{
+	out, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
 		"content":   string(content),
 		"overwrite": false,
 	}, "dave")
@@ -210,13 +210,57 @@ func TestImportData_NoOverwrite(t *testing.T) {
 	}
 }
 
+func TestRequestExportLink_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	store := data.NewDiskUserStore(dir, "")
+	// Seed alice's corpus with a minimal valid envelope.
+	body := []byte(`{"memoList":"[]","tagColorMap":"{}","plotList":"[]","allFolderList":"[]"}`)
+	if err := store.Replace("alice", body); err != nil {
+		t.Fatal(err)
+	}
+	signer := mcp.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+
+	out, isErr := runToolAsUser(t, store, signer, "https://example.test", RequestExportLink(), nil, "alice")
+	if isErr {
+		t.Fatalf("tool errored: %s", out)
+	}
+	if !strings.Contains(out, "/download?t=") {
+		t.Errorf("expected /download?t= in output, got: %s", out)
+	}
+	if !strings.Contains(out, "https://example.test") {
+		t.Errorf("expected configured publicURL in output, got: %s", out)
+	}
+}
+
+func TestRequestExportLink_RequiresUserID(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	signer := mcp.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+	out, isErr := runToolAsUser(t, store, signer, "", RequestExportLink(), nil, "")
+	if !isErr {
+		t.Fatalf("expected error result, got: %s", out)
+	}
+	if !strings.Contains(out, "requires a user identity") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
+func TestRequestExportLink_NoDataYet(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	signer := mcp.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+	out, isErr := runToolAsUser(t, store, signer, "", RequestExportLink(), nil, "bob")
+	if !isErr {
+		t.Fatalf("expected error result, got: %s", out)
+	}
+	if !strings.Contains(out, "no data imported yet") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
 func TestAllToolsReturnDefinitions(t *testing.T) {
 	got := All()
-	// 8 tools required by the original issue, we expose 9 (list_eras and
-	// list_events count as two entries per that description), plus
-	// import_data (GAB-94) brings it to 10.
-	if len(got) != 10 {
-		t.Errorf("want 10 tools, got %d", len(got))
+	// 9 read-only tools + import_data (GAB-94) + request_export_link (GAB-95) = 11.
+	if len(got) != 11 {
+		t.Errorf("want 11 tools, got %d", len(got))
 	}
 	for _, tool := range got {
 		if tool.Def.Name == "" {

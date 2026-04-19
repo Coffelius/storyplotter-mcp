@@ -49,7 +49,12 @@ func UserIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// Handler returns an http.Handler that serves /mcp and /healthz.
+// Handler returns an http.Handler that serves /mcp, /healthz and /download.
+//
+// - /mcp is bearer-protected and resolves user identity from the
+//   X-LibreChat-User-Id header.
+// - /healthz is bearer-free (probed by Uptime Kuma / Coolify healthchecks).
+// - /download is bearer-free — the signed token in ?t=... is the auth.
 func (s *Server) Handler(cfg HTTPConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
@@ -57,6 +62,7 @@ func (s *Server) Handler(cfg HTTPConfig) http.Handler {
 	limiter := NewLimiter()
 	s.limiter = limiter
 
+	// /mcp: bearer + user-id context + rate limit + body cap.
 	mcpCore := bearerMiddleware(cfg.Bearer, userContextMiddleware(http.HandlerFunc(s.serveMCP)))
 	mcpWrapped := http.Handler(mcpCore)
 	if cfg.MCPRateLimitPerMin > 0 {
@@ -66,6 +72,15 @@ func (s *Server) Handler(cfg HTTPConfig) http.Handler {
 		mcpWrapped = WithBodyLimit(mcpWrapped, cfg.BodyLimit)
 	}
 	mux.Handle("/mcp", mcpWrapped)
+
+	// /download: signed token is the auth (no Bearer). IP-based rate limit —
+	// the /download route never sees the LibreChat user header, so keyFnMCP
+	// naturally falls back to ip:<client ip>.
+	var dlHandler http.Handler = http.HandlerFunc(s.serveDownload)
+	if cfg.DownloadRateLimitPerMin > 0 {
+		dlHandler = DownloadMiddleware(limiter, cfg.DownloadRateLimitPerMin, dlHandler)
+	}
+	mux.Handle("/download", dlHandler)
 	return mux
 }
 

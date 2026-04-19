@@ -11,7 +11,7 @@ import (
 )
 
 func TestHTTPInitializeWithBearer(t *testing.T) {
-	s := NewServer(&memStore{})
+	s := NewServer(&memStore{}, nil, "")
 	ts := httptest.NewServer(s.Handler(HTTPConfig{Bearer: "secret"}))
 	defer ts.Close()
 
@@ -65,7 +65,7 @@ func TestHTTPInitializeWithBearer(t *testing.T) {
 }
 
 func TestHTTPRejectsWithoutBearer(t *testing.T) {
-	s := NewServer(&memStore{})
+	s := NewServer(&memStore{}, nil, "")
 	ts := httptest.NewServer(s.Handler(HTTPConfig{Bearer: "secret"}))
 	defer ts.Close()
 
@@ -81,7 +81,7 @@ func TestHTTPRejectsWithoutBearer(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	s := NewServer(&memStore{})
+	s := NewServer(&memStore{}, nil, "")
 	ts := httptest.NewServer(s.Handler(HTTPConfig{Bearer: "secret"}))
 	defer ts.Close()
 
@@ -100,7 +100,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestHTTPRejectsInvalidUserIDHeader(t *testing.T) {
-	s := NewServer(&memStore{})
+	s := NewServer(&memStore{}, nil, "")
 	ts := httptest.NewServer(s.Handler(HTTPConfig{Bearer: "secret"}))
 	defer ts.Close()
 
