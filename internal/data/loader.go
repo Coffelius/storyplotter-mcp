@@ -63,6 +63,33 @@ func (e *Export) FindPlot(title string) *Plot {
 	return nil
 }
 
+// FindPlotsByFolder returns every plot whose FolderPath matches the query
+// (exact match first; if none, case-insensitive substring). Used as a
+// fallback when a title search fails — plot titles in real exports are
+// often auto-generated timestamps and users refer to plots by folder.
+func (e *Export) FindPlotsByFolder(folder string) []*Plot {
+	if folder == "" {
+		return nil
+	}
+	var exact []*Plot
+	for i := range e.PlotList {
+		if e.PlotList[i].FolderPath == folder {
+			exact = append(exact, &e.PlotList[i])
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	lower := toLower(folder)
+	var fuzzy []*Plot
+	for i := range e.PlotList {
+		if contains(toLower(e.PlotList[i].FolderPath), lower) {
+			fuzzy = append(fuzzy, &e.PlotList[i])
+		}
+	}
+	return fuzzy
+}
+
 func toLower(s string) string {
 	b := make([]byte, len(s))
 	for i := 0; i < len(s); i++ {
