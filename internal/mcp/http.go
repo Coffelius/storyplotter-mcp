@@ -8,12 +8,21 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // HTTPConfig configures the HTTP transport.
 type HTTPConfig struct {
 	Addr   string
 	Bearer string // required if non-empty
+
+	// BodyLimit caps request body size in bytes. <=0 means no cap.
+	BodyLimit int64
+	// MCPRateLimitPerMin caps /mcp calls per key per minute. <=0 disables.
+	MCPRateLimitPerMin int
+	// DownloadRateLimitPerMin caps /download calls per key per minute.
+	// Consumed by DownloadMiddleware once the /download route lands.
+	DownloadRateLimitPerMin int
 }
 
 // contextKey is a typed key for request-scoped values.
@@ -44,9 +53,26 @@ func UserIDFromContext(ctx context.Context) string {
 func (s *Server) Handler(cfg HTTPConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
-	mux.Handle("/mcp", bearerMiddleware(cfg.Bearer, userContextMiddleware(http.HandlerFunc(s.serveMCP))))
+
+	limiter := NewLimiter()
+	s.limiter = limiter
+
+	mcpCore := bearerMiddleware(cfg.Bearer, userContextMiddleware(http.HandlerFunc(s.serveMCP)))
+	mcpWrapped := http.Handler(mcpCore)
+	if cfg.MCPRateLimitPerMin > 0 {
+		mcpWrapped = WithRateLimit(mcpWrapped, limiter, cfg.MCPRateLimitPerMin, time.Minute, keyFnMCP)
+	}
+	if cfg.BodyLimit > 0 {
+		mcpWrapped = WithBodyLimit(mcpWrapped, cfg.BodyLimit)
+	}
+	mux.Handle("/mcp", mcpWrapped)
 	return mux
 }
+
+// Limiter exposes the shared rate limiter built for this server's HTTP
+// transport. Returns nil if Handler has not been called. Used by the Wave 2A
+// /download integration to share a single bucket namespace across routes.
+func (s *Server) Limiter() *Limiter { return s.limiter }
 
 // ServeHTTP starts the HTTP listener on cfg.Addr (blocking).
 func (s *Server) ServeHTTP(cfg HTTPConfig) error {
