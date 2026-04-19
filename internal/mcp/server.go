@@ -6,7 +6,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/gabistuff/storyplotter-mcp/internal/data"
+	"github.com/Coffelius/storyplotter-mcp/internal/data"
 )
 
 // ToolHandler is the function a tool registers.

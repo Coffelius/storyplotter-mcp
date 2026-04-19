@@ -1,3 +1,3 @@
-module github.com/gabistuff/storyplotter-mcp
+module github.com/Coffelius/storyplotter-mcp
 
 go 1.26.2

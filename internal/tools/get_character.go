@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gabistuff/storyplotter-mcp/internal/data"
-	"github.com/gabistuff/storyplotter-mcp/internal/mcp"
+	"github.com/Coffelius/storyplotter-mcp/internal/data"
+	"github.com/Coffelius/storyplotter-mcp/internal/mcp"
 )
 
 type getCharacterArgs struct {

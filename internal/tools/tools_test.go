@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gabistuff/storyplotter-mcp/internal/data"
+	"github.com/Coffelius/storyplotter-mcp/internal/data"
 )
 
 func loadFixture(t *testing.T) *data.Export {
