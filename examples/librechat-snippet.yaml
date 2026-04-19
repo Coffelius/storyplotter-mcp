@@ -1,0 +1,32 @@
+# Snippet for LibreChat's librechat.yaml — add under `mcpServers`.
+#
+# Transport: HTTP+SSE (our server serves JSON-RPC over POST /mcp and
+# streams responses as text/event-stream with `event: message` then
+# `event: done`).
+#
+# Auth: single shared bearer, read from env MCP_BEARER. Keep it in
+# LibreChat's .env alongside its other secrets.
+#
+# Verify the `type:` field against your LibreChat version — recent
+# releases accept `streamable-http` (preferred) or `sse`. Pick the one
+# your version supports.
+
+mcpServers:
+  storyplotter:
+    type: streamable-http
+    url: https://mcp-storyplotter.gabi.tv/mcp
+    headers:
+      Authorization: "Bearer ${MCP_BEARER}"
+    # Optional — surfaced in the LibreChat tool picker UI:
+    description: "Access to the StoryPlotter narrative database (plots, characters, timelines)."
+    # Optional — tool name allowlist. Leave empty / omit to expose all 9 tools.
+    # tools:
+    #   - list_plots
+    #   - get_plot
+    #   - list_characters
+    #   - get_character
+    #   - list_relationships
+    #   - list_eras
+    #   - list_events
+    #   - search
+    #   - generate_context
