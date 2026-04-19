@@ -5,11 +5,31 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/Coffelius/storyplotter-mcp/internal/data"
 	"github.com/Coffelius/storyplotter-mcp/internal/mcp"
 	"github.com/Coffelius/storyplotter-mcp/internal/tools"
 )
+
+// envInt64 reads a positive int64 env var, falling back to def on unset or
+// parse error. A warning is logged on parse error.
+func envInt64(name string, def int64) int64 {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v < 0 {
+		log.Printf("warning: %s=%q invalid, using default %d", name, raw, def)
+		return def
+	}
+	return v
+}
+
+func envInt(name string, def int) int {
+	return int(envInt64(name, int64(def)))
+}
 
 const Version = "0.1.0"
 
@@ -43,8 +63,15 @@ func main() {
 			log.Fatalf("serve stdio: %v", err)
 		}
 	case "http":
-		cfg := mcp.HTTPConfig{Addr: *addr, Bearer: os.Getenv("MCP_BEARER")}
-		log.Printf("http listening on %s", cfg.Addr)
+		cfg := mcp.HTTPConfig{
+			Addr:                    *addr,
+			Bearer:                  os.Getenv("MCP_BEARER"),
+			BodyLimit:               envInt64("MCP_BODY_LIMIT_BYTES", 5242880),
+			MCPRateLimitPerMin:      envInt("MCP_RATE_LIMIT_PER_MIN", 60),
+			DownloadRateLimitPerMin: envInt("DOWNLOAD_RATE_LIMIT_PER_MIN", 30),
+		}
+		log.Printf("http listening on %s (body<=%d, mcp<=%d/min, download<=%d/min)",
+			cfg.Addr, cfg.BodyLimit, cfg.MCPRateLimitPerMin, cfg.DownloadRateLimitPerMin)
 		if err := srv.ServeHTTP(cfg); err != nil {
 			log.Fatalf("serve http: %v", err)
 		}

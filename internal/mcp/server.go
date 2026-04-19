@@ -38,9 +38,10 @@ type Tool struct {
 
 // Server holds the registered tools and the user-aware data store.
 type Server struct {
-	Store UserStore
-	tools map[string]Tool
-	mu    sync.RWMutex
+	Store   UserStore
+	tools   map[string]Tool
+	mu      sync.RWMutex
+	limiter *Limiter
 }
 
 // NewServer returns a new Server backed by the given UserStore.
