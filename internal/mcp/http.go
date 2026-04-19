@@ -40,11 +40,17 @@ func UserIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// Handler returns an http.Handler that serves /mcp and /healthz.
+// Handler returns an http.Handler that serves /mcp, /healthz and /download.
+//
+// - /mcp is bearer-protected and resolves user identity from the
+//   X-LibreChat-User-Id header.
+// - /healthz is bearer-free (probed by Uptime Kuma / Coolify healthchecks).
+// - /download is bearer-free — the signed token in ?t=... is the auth.
 func (s *Server) Handler(cfg HTTPConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
 	mux.Handle("/mcp", bearerMiddleware(cfg.Bearer, userContextMiddleware(http.HandlerFunc(s.serveMCP))))
+	mux.HandleFunc("/download", s.serveDownload)
 	return mux
 }
 

@@ -88,12 +88,86 @@ func runTool(t *testing.T, tool Tool, args map[string]any) string {
 // keep loadFixture referenced for inline fixture tests.
 var _ = loadFixture
 
+// runToolAsUser runs a tool with a specific UserID and optional signer /
+// publicURL against the provided store.
+func runToolAsUser(t *testing.T, store mcp.UserStore, signer *mcp.TokenSigner, publicURL string, tool Tool, args map[string]any, userID string) (string, bool) {
+	t.Helper()
+	var raw json.RawMessage
+	if args != nil {
+		b, _ := json.Marshal(args)
+		raw = b
+	}
+	cc := &mcp.CallContext{
+		Ctx:       context.Background(),
+		UserID:    userID,
+		Store:     store,
+		Signer:    signer,
+		PublicURL: publicURL,
+	}
+	res, err := tool.Handler(raw, cc)
+	if err != nil {
+		t.Fatalf("%s: err %v", tool.Def.Name, err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatalf("%s: empty content", tool.Def.Name)
+	}
+	return res.Content[0].Text, res.IsError
+}
+
+func TestRequestExportLink_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	store := data.NewDiskUserStore(dir, "")
+	// Seed alice's corpus with a minimal valid envelope.
+	body := []byte(`{"memoList":"[]","tagColorMap":"{}","plotList":"[]","allFolderList":"[]"}`)
+	if err := store.Replace("alice", body); err != nil {
+		t.Fatal(err)
+	}
+	signer := mcp.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+
+	out, isErr := runToolAsUser(t, store, signer, "https://example.test", RequestExportLink(), nil, "alice")
+	if isErr {
+		t.Fatalf("tool errored: %s", out)
+	}
+	if !strings.Contains(out, "/download?t=") {
+		t.Errorf("expected /download?t= in output, got: %s", out)
+	}
+	if !strings.Contains(out, "https://example.test") {
+		t.Errorf("expected configured publicURL in output, got: %s", out)
+	}
+}
+
+func TestRequestExportLink_RequiresUserID(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	signer := mcp.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+	out, isErr := runToolAsUser(t, store, signer, "", RequestExportLink(), nil, "")
+	if !isErr {
+		t.Fatalf("expected error result, got: %s", out)
+	}
+	if !strings.Contains(out, "requires a user identity") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
+func TestRequestExportLink_NoDataYet(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	signer := mcp.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+	out, isErr := runToolAsUser(t, store, signer, "", RequestExportLink(), nil, "bob")
+	if !isErr {
+		t.Fatalf("expected error result, got: %s", out)
+	}
+	if !strings.Contains(out, "no data imported yet") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
 func TestAllToolsReturnDefinitions(t *testing.T) {
 	got := All()
-	// 8 tools required by the issue; we expose 9 (list_eras and list_events
-	// count as two entries per the issue description).
-	if len(got) != 9 {
-		t.Errorf("want 9 tools, got %d", len(got))
+	// 9 read-only tools (list_eras and list_events count as two entries
+	// per the original issue), plus request_export_link (GAB-95) brings
+	// it to 10. import_data lands separately (GAB-94) and will push this
+	// to 11 at central merge.
+	if len(got) != 10 {
+		t.Errorf("want 10 tools, got %d", len(got))
 	}
 	for _, tool := range got {
 		if tool.Def.Name == "" {

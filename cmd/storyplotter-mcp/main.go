@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -32,19 +33,39 @@ func main() {
 	log.Printf("user store: baseDir=%s shared=%s", dataDir, sharedPath)
 
 	store := data.NewDiskUserStore(dataDir, sharedPath)
-	srv := mcp.NewServer(store)
-	for _, t := range tools.All() {
-		srv.Register(t)
-	}
+
+	var signer *mcp.TokenSigner
+	publicURL := os.Getenv("MCP_PUBLIC_URL")
 
 	switch *mode {
 	case "stdio":
+		srv := mcp.NewServer(store, nil, publicURL)
+		for _, t := range tools.All() {
+			srv.Register(t)
+		}
 		if err := srv.ServeStdio(os.Stdin, os.Stdout); err != nil {
 			log.Fatalf("serve stdio: %v", err)
 		}
 	case "http":
+		keyHex := os.Getenv("DOWNLOAD_SIGNING_KEY")
+		if keyHex == "" {
+			log.Fatalf("DOWNLOAD_SIGNING_KEY is required in http mode (hex-encoded, >=32 bytes, generate with: openssl rand -hex 32)")
+		}
+		key, err := hex.DecodeString(keyHex)
+		if err != nil {
+			log.Fatalf("DOWNLOAD_SIGNING_KEY: invalid hex: %v", err)
+		}
+		if len(key) < 16 {
+			log.Fatalf("DOWNLOAD_SIGNING_KEY: decoded key is %d bytes; need >=16", len(key))
+		}
+		signer = mcp.NewTokenSigner(key)
+
+		srv := mcp.NewServer(store, signer, publicURL)
+		for _, t := range tools.All() {
+			srv.Register(t)
+		}
 		cfg := mcp.HTTPConfig{Addr: *addr, Bearer: os.Getenv("MCP_BEARER")}
-		log.Printf("http listening on %s", cfg.Addr)
+		log.Printf("http listening on %s (publicURL=%q)", cfg.Addr, publicURL)
 		if err := srv.ServeHTTP(cfg); err != nil {
 			log.Fatalf("serve http: %v", err)
 		}

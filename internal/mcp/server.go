@@ -22,9 +22,11 @@ type UserStore interface {
 
 // CallContext carries per-request identity and storage access to tool handlers.
 type CallContext struct {
-	Ctx    context.Context
-	UserID string // "" means anon / shared fallback.
-	Store  UserStore
+	Ctx       context.Context
+	UserID    string // "" means anon / shared fallback.
+	Store     UserStore
+	Signer    *TokenSigner // nil in stdio mode (download is HTTP-only).
+	PublicURL string       // base URL used to build /download links; "" falls back in-tool.
 }
 
 // ToolHandler is the function a tool registers.
@@ -38,14 +40,23 @@ type Tool struct {
 
 // Server holds the registered tools and the user-aware data store.
 type Server struct {
-	Store UserStore
-	tools map[string]Tool
-	mu    sync.RWMutex
+	Store     UserStore
+	Signer    *TokenSigner // optional; required only for request_export_link / /download.
+	PublicURL string       // optional; used to build absolute download links.
+	tools     map[string]Tool
+	mu        sync.RWMutex
 }
 
-// NewServer returns a new Server backed by the given UserStore.
-func NewServer(store UserStore) *Server {
-	return &Server{Store: store, tools: map[string]Tool{}}
+// NewServer returns a new Server backed by the given UserStore. Signer and
+// publicURL may be nil/empty in stdio mode; HTTP mode wires them in from
+// env vars (see cmd/storyplotter-mcp/main.go).
+func NewServer(store UserStore, signer *TokenSigner, publicURL string) *Server {
+	return &Server{
+		Store:     store,
+		Signer:    signer,
+		PublicURL: publicURL,
+		tools:     map[string]Tool{},
+	}
 }
 
 // Register adds a tool.
@@ -126,9 +137,21 @@ func (s *Server) handleToolsCall(r *http.Request, req *Request) *Response {
 // callContext builds a CallContext from the request (nil for stdio).
 func (s *Server) callContext(r *http.Request) *CallContext {
 	if r == nil {
-		return &CallContext{Ctx: context.Background(), UserID: "", Store: s.Store}
+		return &CallContext{
+			Ctx:       context.Background(),
+			UserID:    "",
+			Store:     s.Store,
+			Signer:    s.Signer,
+			PublicURL: s.PublicURL,
+		}
 	}
-	return &CallContext{Ctx: r.Context(), UserID: UserIDFromContext(r.Context()), Store: s.Store}
+	return &CallContext{
+		Ctx:       r.Context(),
+		UserID:    UserIDFromContext(r.Context()),
+		Store:     s.Store,
+		Signer:    s.Signer,
+		PublicURL: s.PublicURL,
+	}
 }
 
 func (s *Server) ok(id json.RawMessage, result any) *Response {

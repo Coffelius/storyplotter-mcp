@@ -47,7 +47,7 @@ func (m *memStore) Raw(string) ([]byte, error)       { return nil, nil }
 func (m *memStore) Replace(string, []byte) error     { return nil }
 
 func newTestServer() *Server {
-	return NewServer(&memStore{})
+	return NewServer(&memStore{}, nil, "")
 }
 
 func TestInitialize(t *testing.T) {
