@@ -72,3 +72,26 @@ func TestFindPlot(t *testing.T) {
 		t.Error("unexpected match")
 	}
 }
+
+func TestFindPlotsByFolder(t *testing.T) {
+	exp := &Export{PlotList: []Plot{
+		{Title: "A", FolderPath: "fantasy"},
+		{Title: "B", FolderPath: "fantasy"},
+		{Title: "C", FolderPath: "sci-fi"},
+	}}
+	if got := exp.FindPlotsByFolder("fantasy"); len(got) != 2 {
+		t.Errorf("exact: got %d, want 2", len(got))
+	}
+	if got := exp.FindPlotsByFolder("sci-fi"); len(got) != 1 || got[0].Title != "C" {
+		t.Errorf("unique exact: %+v", got)
+	}
+	if got := exp.FindPlotsByFolder("FANTASY"); len(got) != 2 {
+		t.Errorf("case-insensitive: got %d", len(got))
+	}
+	if got := exp.FindPlotsByFolder("zzz"); got != nil {
+		t.Errorf("miss should be nil, got %+v", got)
+	}
+	if got := exp.FindPlotsByFolder(""); got != nil {
+		t.Errorf("empty should be nil, got %+v", got)
+	}
+}

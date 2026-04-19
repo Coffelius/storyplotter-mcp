@@ -18,7 +18,7 @@ func GetPlot() mcp.Tool {
 	return mcp.Tool{
 		Def: mcp.ToolDefinition{
 			Name:        "get_plot",
-			Description: "Fetch a plot by title (exact match, else case-insensitive substring).",
+			Description: "Fetch a plot by title (exact, then case-insensitive substring). If no title matches, falls back to matching the folder path; when multiple plots share a folder, returns a disambiguation list of candidate titles.",
 			InputSchema: schema(map[string]any{
 				"type":     "object",
 				"required": []string{"title"},
@@ -35,9 +35,23 @@ func GetPlot() mcp.Tool {
 			if a.Title == "" {
 				return mcp.ErrorResult("title is required"), nil
 			}
-			p, err := requirePlot(d, a.Title)
-			if err != nil {
-				return mcp.ErrorResult(err.Error()), nil
+			p := d.FindPlot(a.Title)
+			if p == nil {
+				candidates := d.FindPlotsByFolder(a.Title)
+				switch len(candidates) {
+				case 0:
+					return mcp.ErrorResult("plot not found: " + a.Title), nil
+				case 1:
+					p = candidates[0]
+				default:
+					var sb strings.Builder
+					fmt.Fprintf(&sb, "%d plots matched folder %q — pass an exact title:\n",
+						len(candidates), a.Title)
+					for _, c := range candidates {
+						fmt.Fprintf(&sb, "- %s (folder: %s)\n", c.Title, c.FolderPath)
+					}
+					return mcp.ErrorResult(sb.String()), nil
+				}
 			}
 			var sb strings.Builder
 			fmt.Fprintf(&sb, "# %s\n", p.Title)

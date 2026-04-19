@@ -89,6 +89,45 @@ func TestGetPlot(t *testing.T) {
 	}
 }
 
+func TestGetPlot_FolderFallback(t *testing.T) {
+	// Three plots across two folders: one unique in "sci-fi",
+	// two sharing "fantasy" to force disambiguation.
+	exp := &data.Export{PlotList: []data.Plot{
+		{Title: "The Crimson Hour", FolderPath: "fantasy"},
+		{Title: "Second Dawn", FolderPath: "fantasy"},
+		{Title: "The Tin Star", FolderPath: "sci-fi"},
+	}}
+
+	call := func(title string) string {
+		t.Helper()
+		raw, _ := json.Marshal(map[string]any{"title": title})
+		res, err := GetPlot().Handler(raw, exp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Content[0].Text
+	}
+
+	if out := call("sci-fi"); !strings.Contains(out, "The Tin Star") {
+		t.Errorf("folder unique: %s", out)
+	}
+	out := call("fantasy")
+	if !strings.Contains(out, "2 plots matched folder") ||
+		!strings.Contains(out, "The Crimson Hour") ||
+		!strings.Contains(out, "Second Dawn") {
+		t.Errorf("folder disambiguation: %s", out)
+	}
+	// Title match still wins over folder-only candidates.
+	if out := call("Crimson"); !strings.Contains(out, "The Crimson Hour") ||
+		strings.Contains(out, "plots matched folder") {
+		t.Errorf("title precedence: %s", out)
+	}
+	// Unmatched query still errors cleanly.
+	if out := call("nothing"); !strings.Contains(out, "plot not found") {
+		t.Errorf("missing: %s", out)
+	}
+}
+
 func TestListCharacters(t *testing.T) {
 	out := runTool(t, ListCharacters(), nil)
 	if !strings.Contains(out, "Ila Varn") || !strings.Contains(out, "Koren Bly") {
