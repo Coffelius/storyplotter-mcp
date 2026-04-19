@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Coffelius/storyplotter-mcp/internal/data"
 	"github.com/Coffelius/storyplotter-mcp/internal/mcp"
 )
 
@@ -30,7 +29,11 @@ func ListPlots() mcp.Tool {
 				},
 			}),
 		},
-		Handler: func(raw json.RawMessage, d *data.Export) (mcp.CallToolResult, error) {
+		Handler: func(raw json.RawMessage, cc *mcp.CallContext) (mcp.CallToolResult, error) {
+			d, err := cc.Store.Load(cc.UserID)
+			if err != nil {
+				return mcp.ErrorResult("load data: " + err.Error()), nil
+			}
 			var a listPlotsArgs
 			if err := decodeArgs(raw, &a); err != nil {
 				return mcp.ErrorResult("invalid arguments: " + err.Error()), nil

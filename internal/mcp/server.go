@@ -1,16 +1,36 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 
 	"github.com/Coffelius/storyplotter-mcp/internal/data"
 )
 
+// UserStore abstracts per-user StoryPlotter data persistence. The concrete
+// disk-backed implementation lives in the data package; see GAB-93.
+type UserStore interface {
+	Load(userID string) (*data.Export, error)
+	Save(userID string, exp *data.Export) error
+	Raw(userID string) ([]byte, error)
+	Replace(userID string, raw []byte) error
+}
+
+// CallContext carries per-request identity and storage access to tool handlers.
+type CallContext struct {
+	Ctx       context.Context
+	UserID    string // "" means anon / shared fallback.
+	Store     UserStore
+	Signer    *TokenSigner // nil in stdio mode (download is HTTP-only).
+	PublicURL string       // base URL used to build /download links; "" falls back in-tool.
+}
+
 // ToolHandler is the function a tool registers.
-type ToolHandler func(args json.RawMessage, d *data.Export) (CallToolResult, error)
+type ToolHandler func(args json.RawMessage, cc *CallContext) (CallToolResult, error)
 
 // Tool bundles a definition with its handler.
 type Tool struct {
@@ -18,16 +38,26 @@ type Tool struct {
 	Handler ToolHandler
 }
 
-// Server holds the registered tools and a reference to the loaded data.
+// Server holds the registered tools and the user-aware data store.
 type Server struct {
-	Data  *data.Export
-	tools map[string]Tool
-	mu    sync.RWMutex
+	Store     UserStore
+	Signer    *TokenSigner // optional; required only for request_export_link / /download.
+	PublicURL string       // optional; used to build absolute download links.
+	tools     map[string]Tool
+	mu        sync.RWMutex
+	limiter   *Limiter
 }
 
-// NewServer returns a new Server.
-func NewServer(d *data.Export) *Server {
-	return &Server{Data: d, tools: map[string]Tool{}}
+// NewServer returns a new Server backed by the given UserStore. Signer and
+// publicURL may be nil/empty in stdio mode; HTTP mode wires them in from
+// env vars (see cmd/storyplotter-mcp/main.go).
+func NewServer(store UserStore, signer *TokenSigner, publicURL string) *Server {
+	return &Server{
+		Store:     store,
+		Signer:    signer,
+		PublicURL: publicURL,
+		tools:     map[string]Tool{},
+	}
 }
 
 // Register adds a tool.
@@ -48,8 +78,11 @@ func (s *Server) toolList() []ToolDefinition {
 	return out
 }
 
-// Dispatch handles one request. Returns nil response for notifications.
-func (s *Server) Dispatch(req *Request) *Response {
+// Dispatch handles one request. Accepts the originating *http.Request so the
+// user-context middleware can surface identity to tool handlers. Pass r == nil
+// for stdio / in-process callers — in that case identity falls back to the
+// shared corpus (UserID "").
+func (s *Server) Dispatch(r *http.Request, req *Request) *Response {
 	// Notifications (no id) don't get a response.
 	isNotification := len(req.ID) == 0 || string(req.ID) == "null"
 
@@ -67,7 +100,7 @@ func (s *Server) Dispatch(req *Request) *Response {
 	case "tools/list":
 		return s.ok(req.ID, ToolsListResult{Tools: s.toolList()})
 	case "tools/call":
-		return s.handleToolsCall(req)
+		return s.handleToolsCall(r, req)
 	default:
 		if isNotification {
 			return nil
@@ -81,7 +114,7 @@ type callParams struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-func (s *Server) handleToolsCall(req *Request) *Response {
+func (s *Server) handleToolsCall(r *http.Request, req *Request) *Response {
 	var p callParams
 	if len(req.Params) > 0 {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -94,11 +127,32 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	if !ok {
 		return s.err(req.ID, CodeMethodNotFound, "unknown tool: "+p.Name)
 	}
-	res, err := t.Handler(p.Arguments, s.Data)
+	cc := s.callContext(r)
+	res, err := t.Handler(p.Arguments, cc)
 	if err != nil {
 		return s.ok(req.ID, ErrorResult(err.Error()))
 	}
 	return s.ok(req.ID, res)
+}
+
+// callContext builds a CallContext from the request (nil for stdio).
+func (s *Server) callContext(r *http.Request) *CallContext {
+	if r == nil {
+		return &CallContext{
+			Ctx:       context.Background(),
+			UserID:    "",
+			Store:     s.Store,
+			Signer:    s.Signer,
+			PublicURL: s.PublicURL,
+		}
+	}
+	return &CallContext{
+		Ctx:       r.Context(),
+		UserID:    UserIDFromContext(r.Context()),
+		Store:     s.Store,
+		Signer:    s.Signer,
+		PublicURL: s.PublicURL,
+	}
 }
 
 func (s *Server) ok(id json.RawMessage, result any) *Response {
@@ -124,7 +178,7 @@ func (s *Server) ServeStdio(r io.Reader, w io.Writer) error {
 			_ = enc.Encode(resp)
 			return err
 		}
-		resp := s.Dispatch(&req)
+		resp := s.Dispatch(nil, &req)
 		if resp == nil {
 			continue
 		}

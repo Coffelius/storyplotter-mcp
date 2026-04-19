@@ -2,16 +2,52 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/Coffelius/storyplotter-mcp/internal/data"
 )
 
+// memStore is a minimal in-memory UserStore for tests.
+type memStore struct {
+	shared *data.Export
+	users  map[string]*data.Export
+}
+
+func (m *memStore) Load(userID string) (*data.Export, error) {
+	if userID == "" {
+		if m.shared == nil {
+			return &data.Export{}, nil
+		}
+		return m.shared, nil
+	}
+	if e, ok := m.users[userID]; ok {
+		return e, nil
+	}
+	return &data.Export{}, nil
+}
+
+func (m *memStore) Save(userID string, exp *data.Export) error {
+	if userID == "" {
+		return nil
+	}
+	if m.users == nil {
+		m.users = map[string]*data.Export{}
+	}
+	m.users[userID] = exp
+	return nil
+}
+
+func (m *memStore) Raw(string) ([]byte, error)       { return nil, nil }
+func (m *memStore) Replace(string, []byte) error     { return nil }
+
 func newTestServer() *Server {
-	return NewServer(&data.Export{})
+	return NewServer(&memStore{}, nil, "")
 }
 
 func TestInitialize(t *testing.T) {
@@ -47,7 +83,7 @@ func TestInitialize(t *testing.T) {
 
 func TestToolsListEmpty(t *testing.T) {
 	s := newTestServer()
-	resp := s.Dispatch(&Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "tools/list"})
+	resp := s.Dispatch(nil, &Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "tools/list"})
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("resp: %+v", resp)
 	}
@@ -63,7 +99,7 @@ func TestToolsListEmpty(t *testing.T) {
 
 func TestMethodNotFound(t *testing.T) {
 	s := newTestServer()
-	resp := s.Dispatch(&Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "bogus"})
+	resp := s.Dispatch(nil, &Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "bogus"})
 	if resp.Error == nil || resp.Error.Code != CodeMethodNotFound {
 		t.Errorf("expected method not found, got %+v", resp)
 	}
@@ -71,8 +107,71 @@ func TestMethodNotFound(t *testing.T) {
 
 func TestNotificationNoResponse(t *testing.T) {
 	s := newTestServer()
-	resp := s.Dispatch(&Request{JSONRPC: "2.0", Method: "initialized"})
+	resp := s.Dispatch(nil, &Request{JSONRPC: "2.0", Method: "initialized"})
 	if resp != nil {
 		t.Errorf("expected nil response for notification, got %+v", resp)
+	}
+}
+
+// --- user-context middleware tests ---
+
+func TestUserContextHeaderValid(t *testing.T) {
+	var seen string
+	h := userContextMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = UserIDFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set(UserIDHeader, "abc123_user")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if seen != "abc123_user" {
+		t.Errorf("UserID = %q, want %q", seen, "abc123_user")
+	}
+}
+
+func TestUserContextHeaderAbsent(t *testing.T) {
+	var seen = "sentinel"
+	h := userContextMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = UserIDFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if seen != "" {
+		t.Errorf("UserID = %q, want empty", seen)
+	}
+}
+
+func TestUserContextHeaderInvalid(t *testing.T) {
+	h := userContextMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatalf("inner handler should not run")
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set(UserIDHeader, "hello world") // space not allowed
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid X-LibreChat-User-Id") {
+		t.Errorf("body = %s", rr.Body.String())
+	}
+}
+
+func TestUserIDFromContextNil(t *testing.T) {
+	if got := UserIDFromContext(nil); got != "" {
+		t.Errorf("want empty, got %q", got)
+	}
+	if got := UserIDFromContext(context.Background()); got != "" {
+		t.Errorf("want empty, got %q", got)
 	}
 }

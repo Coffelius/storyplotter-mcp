@@ -1,13 +1,28 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Coffelius/storyplotter-mcp/internal/data"
+	"github.com/Coffelius/storyplotter-mcp/internal/mcp"
 )
+
+// fixtureStore returns a DiskUserStore whose shared corpus points at the
+// repository's testdata sample, and whose per-user dir is a tmpdir. Using
+// the real store exercises Load/Parse end-to-end.
+func fixtureStore(t *testing.T) *data.DiskUserStore {
+	t.Helper()
+	p, err := filepath.Abs("../../testdata/sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data.NewDiskUserStore(t.TempDir(), p)
+}
 
 func loadFixture(t *testing.T) *data.Export {
 	t.Helper()
@@ -22,6 +37,38 @@ func loadFixture(t *testing.T) *data.Export {
 	return exp
 }
 
+// exportStore wraps a preloaded Export for tests that synthesise fixtures
+// inline (no disk round-trip needed).
+type exportStore struct{ exp *data.Export }
+
+func (e *exportStore) Load(string) (*data.Export, error) {
+	if e.exp == nil {
+		return &data.Export{}, nil
+	}
+	return e.exp, nil
+}
+func (*exportStore) Save(string, *data.Export) error { return nil }
+func (*exportStore) Raw(string) ([]byte, error)      { return nil, nil }
+func (*exportStore) Replace(string, []byte) error    { return nil }
+
+func newCallContext(t *testing.T, exp *data.Export) *mcp.CallContext {
+	t.Helper()
+	return &mcp.CallContext{
+		Ctx:    context.Background(),
+		UserID: "",
+		Store:  &exportStore{exp: exp},
+	}
+}
+
+func newSharedCallContext(t *testing.T) *mcp.CallContext {
+	t.Helper()
+	return &mcp.CallContext{
+		Ctx:    context.Background(),
+		UserID: "",
+		Store:  fixtureStore(t),
+	}
+}
+
 func runTool(t *testing.T, tool Tool, args map[string]any) string {
 	t.Helper()
 	var raw json.RawMessage
@@ -29,7 +76,7 @@ func runTool(t *testing.T, tool Tool, args map[string]any) string {
 		b, _ := json.Marshal(args)
 		raw = b
 	}
-	res, err := tool.Handler(raw, loadFixture(t))
+	res, err := tool.Handler(raw, newSharedCallContext(t))
 	if err != nil {
 		t.Fatalf("%s: err %v", tool.Def.Name, err)
 	}
@@ -39,12 +86,181 @@ func runTool(t *testing.T, tool Tool, args map[string]any) string {
 	return res.Content[0].Text
 }
 
+// keep loadFixture referenced for inline fixture tests.
+var _ = loadFixture
+
+// runToolAsUser runs a tool with a specific UserID and optional signer /
+// publicURL against the provided store.
+func runToolAsUser(t *testing.T, store mcp.UserStore, signer *mcp.TokenSigner, publicURL string, tool Tool, args map[string]any, userID string) (string, bool) {
+	t.Helper()
+	var raw json.RawMessage
+	if args != nil {
+		b, _ := json.Marshal(args)
+		raw = b
+	}
+	cc := &mcp.CallContext{
+		Ctx:       context.Background(),
+		UserID:    userID,
+		Store:     store,
+		Signer:    signer,
+		PublicURL: publicURL,
+	}
+	res, err := tool.Handler(raw, cc)
+	if err != nil {
+		t.Fatalf("%s: err %v", tool.Def.Name, err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatalf("%s: empty content", tool.Def.Name)
+	}
+	return res.Content[0].Text, res.IsError
+}
+
+func TestImportData_HappyPath(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	p, err := filepath.Abs("../../testdata/sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
+		"content": string(content),
+	}, "alice")
+	if isErr {
+		t.Fatalf("import returned error: %s", out)
+	}
+	if !strings.Contains(out, "Imported:") || !strings.Contains(out, "plots") {
+		t.Errorf("unexpected import output: %s", out)
+	}
+	// list_plots for alice should now see the sample plots.
+	out, isErr = runToolAsUser(t, store, nil, "", ListPlots(), nil, "alice")
+	if isErr {
+		t.Fatalf("list_plots errored: %s", out)
+	}
+	if !strings.Contains(out, "The Crimson Hour") {
+		t.Errorf("alice list_plots missing imported plot: %s", out)
+	}
+	// bob never imported — should be empty.
+	out, _ = runToolAsUser(t, store, nil, "", ListPlots(), nil, "bob")
+	if !strings.Contains(out, "No plots") {
+		t.Errorf("bob should see no plots, got: %s", out)
+	}
+}
+
+func TestImportData_RequiresUserID(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	out, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
+		"content": `{"memoList":"[]","tagColorMap":"{}","plotList":"[]","allFolderList":"[]"}`,
+	}, "")
+	if !isErr {
+		t.Fatalf("expected error result for empty user id, got: %s", out)
+	}
+	if !strings.Contains(out, "requires a user identity") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
+func TestImportData_InvalidJSON(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	out, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
+		"content": "not valid json at all",
+	}, "carol")
+	if !isErr {
+		t.Fatalf("expected error result, got: %s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "import failed") && !strings.Contains(strings.ToLower(out), "invalid") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+	// Verify nothing was written: Raw should be empty / not exist.
+	raw, err := store.Raw("carol")
+	if err == nil && len(raw) > 0 {
+		t.Errorf("expected no bytes written on invalid import, got %d bytes", len(raw))
+	}
+}
+
+func TestImportData_NoOverwrite(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	p, err := filepath.Abs("../../testdata/sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// First import succeeds.
+	_, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
+		"content": string(content),
+	}, "dave")
+	if isErr {
+		t.Fatal("first import should succeed")
+	}
+	// Second import with overwrite:false should fail.
+	out, isErr := runToolAsUser(t, store, nil, "", ImportData(), map[string]any{
+		"content":   string(content),
+		"overwrite": false,
+	}, "dave")
+	if !isErr {
+		t.Fatalf("expected error when overwrite=false over existing data, got: %s", out)
+	}
+	if !strings.Contains(out, "overwrite: true") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
+func TestRequestExportLink_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	store := data.NewDiskUserStore(dir, "")
+	// Seed alice's corpus with a minimal valid envelope.
+	body := []byte(`{"memoList":"[]","tagColorMap":"{}","plotList":"[]","allFolderList":"[]"}`)
+	if err := store.Replace("alice", body); err != nil {
+		t.Fatal(err)
+	}
+	signer := mcp.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+
+	out, isErr := runToolAsUser(t, store, signer, "https://example.test", RequestExportLink(), nil, "alice")
+	if isErr {
+		t.Fatalf("tool errored: %s", out)
+	}
+	if !strings.Contains(out, "/download?t=") {
+		t.Errorf("expected /download?t= in output, got: %s", out)
+	}
+	if !strings.Contains(out, "https://example.test") {
+		t.Errorf("expected configured publicURL in output, got: %s", out)
+	}
+}
+
+func TestRequestExportLink_RequiresUserID(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	signer := mcp.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+	out, isErr := runToolAsUser(t, store, signer, "", RequestExportLink(), nil, "")
+	if !isErr {
+		t.Fatalf("expected error result, got: %s", out)
+	}
+	if !strings.Contains(out, "requires a user identity") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
+func TestRequestExportLink_NoDataYet(t *testing.T) {
+	store := data.NewDiskUserStore(t.TempDir(), "")
+	signer := mcp.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+	out, isErr := runToolAsUser(t, store, signer, "", RequestExportLink(), nil, "bob")
+	if !isErr {
+		t.Fatalf("expected error result, got: %s", out)
+	}
+	if !strings.Contains(out, "no data imported yet") {
+		t.Errorf("unexpected error text: %s", out)
+	}
+}
+
 func TestAllToolsReturnDefinitions(t *testing.T) {
 	got := All()
-	// 8 tools required by the issue; we expose 9 (list_eras and list_events
-	// count as two entries per the issue description).
-	if len(got) != 9 {
-		t.Errorf("want 9 tools, got %d", len(got))
+	// 9 read-only tools + import_data (GAB-94) + request_export_link (GAB-95) = 11.
+	if len(got) != 11 {
+		t.Errorf("want 11 tools, got %d", len(got))
 	}
 	for _, tool := range got {
 		if tool.Def.Name == "" {
@@ -101,7 +317,7 @@ func TestGetPlot_FolderFallback(t *testing.T) {
 	call := func(title string) string {
 		t.Helper()
 		raw, _ := json.Marshal(map[string]any{"title": title})
-		res, err := GetPlot().Handler(raw, exp)
+		res, err := GetPlot().Handler(raw, newCallContext(t, exp))
 		if err != nil {
 			t.Fatal(err)
 		}
