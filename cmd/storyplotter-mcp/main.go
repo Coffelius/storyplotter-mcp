@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -17,7 +18,11 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("[storyplotter-mcp] ")
 
-	fmt.Fprintf(os.Stderr, "storyplotter-mcp v%s\n", Version)
+	mode := flag.String("mode", "stdio", "transport mode: stdio or http")
+	addr := flag.String("addr", ":8080", "listen address for http mode")
+	flag.Parse()
+
+	fmt.Fprintf(os.Stderr, "storyplotter-mcp v%s (mode=%s)\n", Version, *mode)
 
 	path := os.Getenv("STORYPLOTTER_DATA_PATH")
 	var exp *data.Export
@@ -37,7 +42,19 @@ func main() {
 	for _, t := range tools.All() {
 		srv.Register(t)
 	}
-	if err := srv.ServeStdio(os.Stdin, os.Stdout); err != nil {
-		log.Fatalf("serve: %v", err)
+
+	switch *mode {
+	case "stdio":
+		if err := srv.ServeStdio(os.Stdin, os.Stdout); err != nil {
+			log.Fatalf("serve stdio: %v", err)
+		}
+	case "http":
+		cfg := mcp.HTTPConfig{Addr: *addr, Bearer: os.Getenv("MCP_BEARER")}
+		log.Printf("http listening on %s", cfg.Addr)
+		if err := srv.ServeHTTP(cfg); err != nil {
+			log.Fatalf("serve http: %v", err)
+		}
+	default:
+		log.Fatalf("unknown mode: %s", *mode)
 	}
 }
