@@ -11,22 +11,17 @@ import (
 	"github.com/Coffelius/storyplotter-mcp/internal/mcp"
 )
 
-// memStore is a trivial in-memory UserStore for tool tests. All ids resolve
-// to the same shared Export so existing assertions keep working when UserID
-// is "".
-type memStore struct {
-	shared *data.Export
-}
-
-func (m *memStore) Load(userID string) (*data.Export, error) {
-	if m.shared == nil {
-		return &data.Export{}, nil
+// fixtureStore returns a DiskUserStore whose shared corpus points at the
+// repository's testdata sample, and whose per-user dir is a tmpdir. Using
+// the real store exercises Load/Parse end-to-end.
+func fixtureStore(t *testing.T) *data.DiskUserStore {
+	t.Helper()
+	p, err := filepath.Abs("../../testdata/sample.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	return m.shared, nil
+	return data.NewDiskUserStore(t.TempDir(), p)
 }
-func (m *memStore) Save(string, *data.Export) error { return nil }
-func (m *memStore) Raw(string) ([]byte, error)      { return nil, nil }
-func (m *memStore) Replace(string, []byte) error    { return nil }
 
 func loadFixture(t *testing.T) *data.Export {
 	t.Helper()
@@ -41,12 +36,35 @@ func loadFixture(t *testing.T) *data.Export {
 	return exp
 }
 
+// exportStore wraps a preloaded Export for tests that synthesise fixtures
+// inline (no disk round-trip needed).
+type exportStore struct{ exp *data.Export }
+
+func (e *exportStore) Load(string) (*data.Export, error) {
+	if e.exp == nil {
+		return &data.Export{}, nil
+	}
+	return e.exp, nil
+}
+func (*exportStore) Save(string, *data.Export) error { return nil }
+func (*exportStore) Raw(string) ([]byte, error)      { return nil, nil }
+func (*exportStore) Replace(string, []byte) error    { return nil }
+
 func newCallContext(t *testing.T, exp *data.Export) *mcp.CallContext {
 	t.Helper()
 	return &mcp.CallContext{
 		Ctx:    context.Background(),
 		UserID: "",
-		Store:  &memStore{shared: exp},
+		Store:  &exportStore{exp: exp},
+	}
+}
+
+func newSharedCallContext(t *testing.T) *mcp.CallContext {
+	t.Helper()
+	return &mcp.CallContext{
+		Ctx:    context.Background(),
+		UserID: "",
+		Store:  fixtureStore(t),
 	}
 }
 
@@ -57,7 +75,7 @@ func runTool(t *testing.T, tool Tool, args map[string]any) string {
 		b, _ := json.Marshal(args)
 		raw = b
 	}
-	res, err := tool.Handler(raw, newCallContext(t, loadFixture(t)))
+	res, err := tool.Handler(raw, newSharedCallContext(t))
 	if err != nil {
 		t.Fatalf("%s: err %v", tool.Def.Name, err)
 	}
@@ -66,6 +84,9 @@ func runTool(t *testing.T, tool Tool, args map[string]any) string {
 	}
 	return res.Content[0].Text
 }
+
+// keep loadFixture referenced for inline fixture tests.
+var _ = loadFixture
 
 func TestAllToolsReturnDefinitions(t *testing.T) {
 	got := All()
