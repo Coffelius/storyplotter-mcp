@@ -28,7 +28,11 @@ func ListCharacters() mcp.Tool {
 				},
 			}),
 		},
-		Handler: func(raw json.RawMessage, d *data.Export) (mcp.CallToolResult, error) {
+		Handler: func(raw json.RawMessage, cc *mcp.CallContext) (mcp.CallToolResult, error) {
+			d, err := cc.Store.Load(cc.UserID)
+			if err != nil {
+				return mcp.ErrorResult("load data: " + err.Error()), nil
+			}
 			var a listCharactersArgs
 			if err := decodeArgs(raw, &a); err != nil {
 				return mcp.ErrorResult("invalid arguments: " + err.Error()), nil

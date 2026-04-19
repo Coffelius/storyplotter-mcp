@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -14,11 +16,35 @@ type HTTPConfig struct {
 	Bearer string // required if non-empty
 }
 
+// contextKey is a typed key for request-scoped values.
+type contextKey string
+
+const userIDContextKey contextKey = "storyplotter.user_id"
+
+// UserIDHeader is the HTTP header LibreChat populates (via its dynamic
+// placeholder {{LIBRECHAT_USER_ID}}) per-request.
+const UserIDHeader = "X-LibreChat-User-Id"
+
+// userIDPattern matches LibreChat user ids (ObjectId hex or similar). We
+// deliberately accept letters, digits, underscore, and hyphen — 1..64 chars.
+var userIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+// UserIDFromContext returns the user id stashed by userContextMiddleware, or "".
+func UserIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(userIDContextKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // Handler returns an http.Handler that serves /mcp and /healthz.
 func (s *Server) Handler(cfg HTTPConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
-	mux.Handle("/mcp", bearerMiddleware(cfg.Bearer, http.HandlerFunc(s.serveMCP)))
+	mux.Handle("/mcp", bearerMiddleware(cfg.Bearer, userContextMiddleware(http.HandlerFunc(s.serveMCP))))
 	return mux
 }
 
@@ -50,6 +76,23 @@ func bearerMiddleware(token string, next http.Handler) http.Handler {
 	})
 }
 
+// userContextMiddleware extracts the optional X-LibreChat-User-Id header and
+// injects a validated user id into the request context. Missing header is
+// not an error (falls back to shared corpus); malformed header -> 400.
+func userContextMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uid := strings.TrimSpace(r.Header.Get(UserIDHeader))
+		if uid != "" && !userIDPattern.MatchString(uid) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid X-LibreChat-User-Id"}`))
+			return
+		}
+		ctx := context.WithValue(r.Context(), userIDContextKey, uid)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -67,7 +110,7 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "parse: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	resp := s.Dispatch(&req)
+	resp := s.Dispatch(r, &req)
 
 	// Stream via SSE for LibreChat compatibility.
 	w.Header().Set("Content-Type", "text/event-stream")

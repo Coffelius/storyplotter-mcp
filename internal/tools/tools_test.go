@@ -1,13 +1,32 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Coffelius/storyplotter-mcp/internal/data"
+	"github.com/Coffelius/storyplotter-mcp/internal/mcp"
 )
+
+// memStore is a trivial in-memory UserStore for tool tests. All ids resolve
+// to the same shared Export so existing assertions keep working when UserID
+// is "".
+type memStore struct {
+	shared *data.Export
+}
+
+func (m *memStore) Load(userID string) (*data.Export, error) {
+	if m.shared == nil {
+		return &data.Export{}, nil
+	}
+	return m.shared, nil
+}
+func (m *memStore) Save(string, *data.Export) error { return nil }
+func (m *memStore) Raw(string) ([]byte, error)      { return nil, nil }
+func (m *memStore) Replace(string, []byte) error    { return nil }
 
 func loadFixture(t *testing.T) *data.Export {
 	t.Helper()
@@ -22,6 +41,15 @@ func loadFixture(t *testing.T) *data.Export {
 	return exp
 }
 
+func newCallContext(t *testing.T, exp *data.Export) *mcp.CallContext {
+	t.Helper()
+	return &mcp.CallContext{
+		Ctx:    context.Background(),
+		UserID: "",
+		Store:  &memStore{shared: exp},
+	}
+}
+
 func runTool(t *testing.T, tool Tool, args map[string]any) string {
 	t.Helper()
 	var raw json.RawMessage
@@ -29,7 +57,7 @@ func runTool(t *testing.T, tool Tool, args map[string]any) string {
 		b, _ := json.Marshal(args)
 		raw = b
 	}
-	res, err := tool.Handler(raw, loadFixture(t))
+	res, err := tool.Handler(raw, newCallContext(t, loadFixture(t)))
 	if err != nil {
 		t.Fatalf("%s: err %v", tool.Def.Name, err)
 	}
@@ -101,7 +129,7 @@ func TestGetPlot_FolderFallback(t *testing.T) {
 	call := func(title string) string {
 		t.Helper()
 		raw, _ := json.Marshal(map[string]any{"title": title})
-		res, err := GetPlot().Handler(raw, exp)
+		res, err := GetPlot().Handler(raw, newCallContext(t, exp))
 		if err != nil {
 			t.Fatal(err)
 		}
